@@ -387,6 +387,16 @@ const REGIONS = [
   {id:"nakh", label:"Naxçıvan"},
 ];
 
+// Derive Firestore region key from city name
+function cityToRegion(city) {
+  if (!city) return "other";
+  const c = city.trim();
+  if (c === "Bakı") return "baku";
+  if (c === "Naxçıvan") return "nakh";
+  if (c === "Gəncə") return "ganja";
+  return "other";
+}
+
 // ── QUERY PARSER (client-side) ──
 const BRAND_MAP={"peugeot":"Peugeot","pejo":"Peugeot","lada":"Lada","vaz":"VAZ","toyota":"Toyota","hyundai":"Hyundai","bmw":"BMW","mercedes":"Mercedes","ford":"Ford","opel":"Opel","volkswagen":"Volkswagen","vw":"Volkswagen","kia":"KIA","honda":"Honda","nissan":"Nissan","chevrolet":"Chevrolet"};
 const MODEL_MAP={"308":"308","207":"207","206":"206","2008":"2008","granta":"Granta","priora":"Priora","camry":"Camry","corolla":"Corolla","yaris":"Yaris","accent":"Accent","tucson":"Tucson","elantra":"Elantra","golf":"Golf","passat":"Passat","polo":"Polo","focus":"Focus","2107":"2107","2106":"2106"};
@@ -526,8 +536,9 @@ function ResultsPage({query,region,onBack,onProduct,onContact}){
 
   useEffect(()=>{
     // Load active products from Firestore
+    // Query all live products, filter by region client-side
+    // (avoids Firestore composite index requirement and fixes legacy docs without region field)
     let q2=db.collection("products").where("status","==","live");
-    if(region!=="all") q2=q2.where("region","==",region);
     return q2.onSnapshot(snap=>{
       const prods=snap.docs.map(d=>({id:d.id,...d.data()}));
       setAllProducts(prods);
@@ -544,7 +555,13 @@ function ResultsPage({query,region,onBack,onProduct,onContact}){
 
   const results = allProducts
     .map(p=>({...p,_score:scoreProduct(p,params)}))
-    .filter(p=>p._score>=2)
+    .filter(p=>{
+      if(p._score<2) return false;
+      if(region==="all") return true;
+      // client-side region filter: match region field or derive from seller city
+      const pr=p.region||cityToRegion(p.city)||"other";
+      return pr===region;
+    })
     .sort((a,b)=>{
       if(a.availability!==b.availability) return a.availability==="in_stock"?-1:1;
       return (a.price||9999)-(b.price||9999);
@@ -727,7 +744,7 @@ function LoginPage({onLogin,onBack}){
       }else{
         // New seller — create minimal profile, go to settings
         await db.collection("sellers").doc(uid).set({
-          phone:phone_num,shopName:"",city:"Bakı",whatsapp:"",email:"",
+          phone:phone_num,shopName:"",city:"Bakı",region:"baku",whatsapp:"",email:"",
           createdAt:firebase.firestore.FieldValue.serverTimestamp(),
           lastUpload:null,
         });
@@ -785,7 +802,7 @@ function SettingsPage({seller,onSave,onLogout,onBack}){
   const handleSave=async()=>{
     setSaving(true);
     try{
-      await db.collection("sellers").doc(seller.uid).update({...form,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      await db.collection("sellers").doc(seller.uid).update({...form,region:cityToRegion(form.city),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       onSave(form);
     }catch(e){console.error(e);}
     finally{setSaving(false);}
@@ -895,7 +912,7 @@ function ProductForm({product,seller,onBack,onSaved,onDeleted}){
       yearTo:form.yearTo?Number(form.yearTo):null,
       status:asDraft?"draft":"live",
       sellerId:seller.uid,
-      region:seller.city==="Bakı"?"baku":seller.city==="Naxçıvan"?"nakh":seller.city==="Gəncə"?"ganja":"other",
+      region:cityToRegion(seller.city),
       updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
     };
     try{
@@ -1109,7 +1126,12 @@ function App(){
   useEffect(()=>{
     return db.collection("sellers").onSnapshot(snap=>{
       const counts={all:snap.size,baku:0,ganja:0,nakh:0,other:0};
-      snap.docs.forEach(d=>{const r=d.data().region||"other";if(counts[r]!==undefined)counts[r]++;});
+      snap.docs.forEach(d=>{
+        const data=d.data();
+        // Use region field if present, fall back to deriving from city
+        const r=data.region||cityToRegion(data.city)||"other";
+        if(counts[r]!==undefined)counts[r]++;
+      });
       // baku sellers also count toward "all" already
       setSellerCounts(counts);
     });
