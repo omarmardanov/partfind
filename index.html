@@ -474,50 +474,126 @@ function parseQuery(raw){
 
 // Score a product against parsed query params
 function scoreProduct(p, params, rawQuery) {
-  let score = 0;
-  if(params.partType && p.partType===params.partType) score+=3;
-
-  // Check compatibility array (new format) or legacy flat fields
   const compat = p.compatibility && p.compatibility.length > 0 ? p.compatibility : null;
+
+  // ── Compatibility score: best matching entry wins ──
+  let compatScore = 0;
+  let brandMatched = false;
+  let modelMatched = false;
+
   if(compat){
-    let compatScore = 0;
     for(const entry of compat){
       let es = 0;
-      if(params.brand && entry.make===params.brand) es+=2;
-      if(params.model && entry.model===params.model) es+=2;
-      if(params.year && entry.yearFrom && entry.yearTo && params.year>=entry.yearFrom && params.year<=entry.yearTo) es+=1;
-      compatScore = Math.max(compatScore, es);
+      const bm = params.brand && entry.make === params.brand;
+      const mm = params.model && entry.model === params.model;
+      const ym = params.year && entry.yearFrom && entry.yearTo && params.year >= entry.yearFrom && params.year <= entry.yearTo;
+      if(bm) es += 2;
+      if(mm) es += 2;
+      if(ym) es += 1;
+      if(es > compatScore){
+        compatScore = es;
+        if(bm) brandMatched = true;
+        if(mm) modelMatched = true;
+      }
     }
-    score += compatScore;
   } else {
     // Legacy flat fields
-    if(params.brand && p.brand===params.brand) score+=2;
-    if(params.model && p.model===params.model) score+=2;
-    if(params.year && p.yearFrom && p.yearTo && params.year>=p.yearFrom && params.year<=p.yearTo) score+=1;
+    const bm = params.brand && p.brand === params.brand;
+    const mm = params.model && p.model === params.model;
+    const ym = params.year && p.yearFrom && p.yearTo && params.year >= p.yearFrom && params.year <= p.yearTo;
+    if(bm){ compatScore += 2; brandMatched = true; }
+    if(mm){ compatScore += 2; modelMatched = true; }
+    if(ym) compatScore += 1;
   }
-  if(params.engine && p.engine && p.engine.includes(params.engine)) score+=1;
 
-  // Name-based fallback
-  if(rawQuery && score===0){
-    const tokens=rawQuery.toLowerCase().split(/[\s,\-\/]+/).filter(t=>t.length>2);
-    const compatText = compat ? compat.map(e=>[e.make,e.model].filter(Boolean).join(" ")).join(" ") : [p.brand,p.model].filter(Boolean).join(" ");
-    const haystack=[p.name,p.partType,compatText].filter(Boolean).join(" ").toLowerCase();
-    if(tokens.some(t=>haystack.includes(t))) score=1;
+  // ── Hard filters: if query specifies brand/model, product MUST match them ──
+  // This prevents "Peugeot 308 Radiator" from returning Hyundai radiators
+  if(params.brand && !brandMatched) return 0;
+  if(params.model && !modelMatched) return 0;
+
+  // ── Part type score ──
+  let score = compatScore;
+  if(params.partType && p.partType === params.partType) score += 3;
+  if(params.engine && p.engine && p.engine.includes(params.engine)) score += 1;
+
+  // ── Minimum: need at least one signal to show ──
+  // If query has no brand/model/partType parsed, fall back to name search
+  const hasStructuredParams = params.brand || params.model || params.partType;
+  if(!hasStructuredParams && rawQuery){
+    const tokens = rawQuery.toLowerCase().split(/[\s,\-\/]+/).filter(t => t.length > 2);
+    const compatText = compat
+      ? compat.map(e => [e.make, e.model].filter(Boolean).join(" ")).join(" ")
+      : [p.brand, p.model].filter(Boolean).join(" ");
+    const haystack = [p.name, p.partType, compatText].filter(Boolean).join(" ").toLowerCase();
+    return tokens.some(t => haystack.includes(t)) ? 1 : 0;
   }
+
+  // Name-based boost: if product name contains a query token, add 1
+  if(rawQuery && score > 0){
+    const tokens = rawQuery.toLowerCase().split(/[\s,\-\/]+/).filter(t => t.length > 2);
+    const haystack = [p.name, p.partType].filter(Boolean).join(" ").toLowerCase();
+    if(tokens.some(t => haystack.includes(t))) score += 1;
+  }
+
   return score;
 }
 
 // CSV helpers
-const COL_MAP={"наименование товара":"partName","наименование":"partName","part name":"partName","name":"partName","hissə adı":"partName","марка":"brand","brand":"brand","marka":"brand","модель":"model","model":"model","год":"year","year":"year","il":"year","цена":"price","цена azn":"price","price":"price","qiymət":"price","engine":"engine","двигатель":"engine","mühərrik":"engine","состояние":"condition","condition":"condition","vəziyyət":"condition","наличие":"availability","availability":"availability","остаток":"availability","mövcudluq":"availability","марка/модель/год":null,"примечания":"notes","notes":"notes","qeydlər":"notes"};
-const CANON_LABELS={partName:"Hissə adı",brand:"Marka",model:"Model",year:"İl",engine:"Mühərrik",price:"Qiymət",condition:"Vəziyyət",availability:"Mövcudluq",notes:"Qeydlər"};
+const COL_MAP={
+  // Part info
+  "hissə adı":"partName","наименование товара":"partName","наименование":"partName","part name":"partName","name":"partName",
+  "hissə növü":"partType","part type":"partType","категория":"partType",
+  "vəziyyət":"condition","состояние":"condition","condition":"condition",
+  // Manufacturer
+  "istehsalçı marka":"manufacturerBrand","istehsalçı":"manufacturerBrand","manufacturer":"manufacturerBrand","бренд":"manufacturerBrand",
+  "istehsalçı ölkə":"manufacturerCountry","ölkə":"manufacturerCountry","country":"manufacturerCountry","страна":"manufacturerCountry",
+  "mühərrik":"engine","двигатель":"engine","engine":"engine",
+  // Compatibility (multi-value separated by ;)
+  "avtomobil markaları":"compatMakes","марка":"compatMakes","brand":"compatMakes","marka":"compatMakes",
+  "avtomobil modelləri":"compatModels","модель":"compatModels","model":"compatModels",
+  "ildən":"yearFrom","год от":"yearFrom","year from":"yearFrom","il":"yearFrom",
+  "ilə qədər":"yearTo","год до":"yearTo","year to":"yearTo",
+  "год":"yearFrom",
+  // Pricing
+  "qiymət":"price","цена":"price","цена azn":"price","price":"price",
+  "mövcudluq":"availability","наличие":"availability","остаток":"availability","availability":"availability",
+  // Notes
+  "qeydlər":"notes","примечания":"notes","notes":"notes",
+  // Ignore
+  "марка/модель/год":null,
+};
+const CANON_LABELS={
+  partName:"Hissə adı",partType:"Hissə növü",condition:"Vəziyyət",
+  manufacturerBrand:"İstehsalçı marka",manufacturerCountry:"İstehsalçı ölkə",engine:"Mühərrik",
+  compatMakes:"Avtomobil markaları",compatModels:"Avtomobil modelləri",
+  yearFrom:"İldən",yearTo:"İlə qədər",
+  price:"Qiymət",availability:"Mövcudluq",notes:"Qeydlər",
+  brand:"Marka",model:"Model",year:"İl", // legacy
+};
 function inferCols(headers){return headers.map(h=>{const low=h.toLowerCase().trim(),inf=COL_MAP[low];return{original:h,inferred:inf!==undefined?(inf===null?"ignore":inf):"ignore",confidence:inf===null?"warn":inf!==undefined?"ok":"warn"};});}
 function normalizeRows(rows,mappings){
   return rows.slice(0,100).map((row,i)=>{
-    const obj={};mappings.forEach(m=>{if(m.inferred&&m.inferred!=="ignore")obj[m.inferred]=row[m.original]||null;});
+    const obj={};
+    mappings.forEach(m=>{if(m.inferred&&m.inferred!=="ignore")obj[m.inferred]=row[m.original]||null;});
+
+    // Build compatibility array from multi-value fields (separated by ;)
+    const makes=(obj.compatMakes||obj.brand||"").split(";").map(s=>s.trim()).filter(Boolean);
+    const models=(obj.compatModels||obj.model||"").split(";").map(s=>s.trim()).filter(Boolean);
+    const yearFroms=(obj.yearFrom||"").toString().split(";").map(s=>s.trim()).filter(Boolean);
+    const yearTos=(obj.yearTo||"").toString().split(";").map(s=>s.trim()).filter(Boolean);
+    const count=Math.max(makes.length,models.length,1);
+    const compatibility=Array.from({length:count},(_,idx)=>({
+      make:makes[idx]||makes[0]||"",
+      model:models[idx]||"",
+      yearFrom:yearFroms[idx]?Number(yearFroms[idx]):null,
+      yearTo:yearTos[idx]?Number(yearTos[idx]):null,
+    })).filter(e=>e.make||e.model);
+    obj.compatibility=compatibility.length>0?compatibility:[];
+
     let status="ok",issue="Bütün sahələr xəritələndi";
-    if(Object.values(obj).every(v=>!v)){status="err";issue="Boş sətir";}
+    if(Object.values(obj).every(v=>!v||v==="")){status="err";issue="Boş sətir";}
     else if(!obj.partName){status="err";issue="Hissə adı yoxdur";}
-    else if(!obj.brand&&!obj.model){status="warn";issue="Marka/model qeyri-müəyyəndir";}
+    else if(obj.compatibility.length===0){status="warn";issue="Avtomobil uyğunluğu qeyri-müəyyəndir";}
     else if(!obj.price){status="warn";issue="Qiymət tapılmadı";}
     return{...obj,_id:i,_status:status,_issue:issue};
   });
@@ -639,7 +715,7 @@ function ResultsPage({query,region,onBack,onProduct,onContact}){
   const results = allProducts
     .map(p=>({...p,_score:scoreProduct(p,params,query)}))
     .filter(p=>{
-      if(p._score<1) return false;
+      if(p._score<2) return false;
       if(region==="all") return true;
       // client-side region filter
       const pr=p.region||"other";
@@ -885,35 +961,138 @@ function LoginPage({onLogin,onBack}){
 }
 
 // ── SETTINGS ──
+// Format +994 XX XXX XX XX — stores raw digits after +994
+function formatAzPhone(raw){
+  const d=raw.replace(/\D/g,"").slice(0,9);
+  let o="";
+  if(d.length>0) o+=d.slice(0,2);
+  if(d.length>2) o+=" "+d.slice(2,5);
+  if(d.length>5) o+=" "+d.slice(5,7);
+  if(d.length>7) o+=" "+d.slice(7,9);
+  return o;
+}
+
+// Format international WhatsApp number — digits only, up to 15
+function formatIntlPhone(raw){
+  // Keep leading + if present, then digits only
+  const hasPlus=raw.startsWith("+");
+  const d=raw.replace(/\D/g,"").slice(0,15);
+  return (hasPlus?"+":"")+d;
+}
+
+// Validate email loosely
+function isValidEmail(v){ return !v || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); }
+
+function AzPhoneInput({value, onChange, label}){
+  // value stored as "+994XXXXXXXXX" or "XXXXXXXXX" (9 digits)
+  const digits = value.replace(/\D/g,"").replace(/^994/,"").slice(0,9);
+  return(
+    <div className="field-wrap">
+      <div className="field-label-form">{label}</div>
+      <div className="phone-wrap">
+        <span className="phone-prefix">+994</span>
+        <input className="phone-input" type="tel" placeholder="50 000 00 00"
+          value={formatAzPhone(digits)}
+          onChange={e=>{
+            const d=e.target.value.replace(/\D/g,"").slice(0,9);
+            onChange(d.length>0?"+994"+d:"");
+          }}/>
+      </div>
+    </div>
+  );
+}
+
+function IntlPhoneInput({value, onChange, label, placeholder}){
+  return(
+    <div className="field-wrap">
+      <div className="field-label-form">{label}</div>
+      <input className="form-input" type="tel" placeholder={placeholder||"+X XXX XXX XX XX"}
+        value={value}
+        onChange={e=>{
+          const raw=e.target.value;
+          const hasPlus=raw.startsWith("+");
+          const d=raw.replace(/\D/g,"").slice(0,15);
+          onChange(d.length>0?(hasPlus?"+":"")+d:"");
+        }}/>
+    </div>
+  );
+}
+
+function EmailInput({value, onChange, label}){
+  const [touched,setTouched]=useState(false);
+  const invalid=touched && !isValidEmail(value);
+  return(
+    <div className="field-wrap">
+      <div className="field-label-form">{label}</div>
+      <input className={`form-input${invalid?" error":""}`} type="email"
+        placeholder="mağaza@example.az"
+        value={value}
+        onChange={e=>onChange(e.target.value.replace(/\s/g,""))}
+        onBlur={()=>setTouched(true)}/>
+      {invalid&&<div style={{fontSize:11,color:"var(--red)",marginTop:3}}>Düzgün e-poçt daxil edin</div>}
+    </div>
+  );
+}
+
 function SettingsPage({seller,onSave,onLogout,onBack}){
-  const [form,setForm]=useState({shopName:seller?.shopName||"",city:seller?.city||"Bakı",phone:seller?.phone||"",whatsapp:seller?.whatsapp||"",email:seller?.email||""});
+  const [form,setForm]=useState({
+    shopName:seller?.shopName||"",
+    city:seller?.city||"Bakı",
+    phone:seller?.phone||"",
+    whatsapp:seller?.whatsapp||"",
+    email:seller?.email||"",
+  });
   const [saving,setSaving]=useState(false);
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+
   const handleSave=async()=>{
+    if(!isValidEmail(form.email)) return;
     setSaving(true);
     try{
-      await db.collection("sellers").doc(seller.uid).update({...form,region:cityToRegion(form.city),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      await db.collection("sellers").doc(seller.uid).update({
+        ...form,
+        region:cityToRegion(form.city),
+        updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
+      });
       onSave(form);
     }catch(e){console.error(e);}
     finally{setSaving(false);}
   };
+
   return(
     <div>
-      <div className="settings-header"><button className="icon-btn" onClick={onBack}><Icon name="arrowLeft" size={16} strokeWidth={2}/></button><div className="form-title">{AZ.settingsTitle}</div></div>
+      <div className="settings-header">
+        <button className="icon-btn" onClick={onBack}><Icon name="arrowLeft" size={16} strokeWidth={2}/></button>
+        <div className="form-title">{AZ.settingsTitle}</div>
+      </div>
       <div className="settings-body">
         <div className="settings-section">
           <div className="settings-section-title">{AZ.shopInfo}</div>
           <div className="field-group-form">
-            <div className="field-wrap"><div className="field-label-form">{AZ.shopName}</div><input className="form-input" placeholder="Vera Auto Hissələri" value={form.shopName} onChange={e=>set("shopName",e.target.value)}/></div>
-            <div className="field-wrap"><div className="field-label-form">{AZ.city}</div><select className="form-select" value={form.city} onChange={e=>set("city",e.target.value)}>{AZ_CITIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
-            <div className="field-wrap"><div className="field-label-form">{AZ.phone}</div><input className="form-input" type="tel" placeholder="+994 50 000 00 00" value={form.phone} onChange={e=>set("phone",e.target.value)}/></div>
-            <div className="field-wrap"><div className="field-label-form">{AZ.whatsappNum}</div><input className="form-input" type="tel" placeholder="+994 50 000 00 00" value={form.whatsapp} onChange={e=>set("whatsapp",e.target.value)}/></div>
-            <div className="field-wrap"><div className="field-label-form">{AZ.emailAddr}</div><input className="form-input" type="email" placeholder="mağaza@example.az" value={form.email} onChange={e=>set("email",e.target.value)}/></div>
+            <div className="field-wrap">
+              <div className="field-label-form">{AZ.shopName}</div>
+              <input className="form-input" placeholder="Vera Auto Hissələri" value={form.shopName} onChange={e=>set("shopName",e.target.value)}/>
+            </div>
+            <div className="field-wrap">
+              <div className="field-label-form">{AZ.city}</div>
+              <select className="form-select" value={form.city} onChange={e=>set("city",e.target.value)}>
+                {AZ_CITIES.map(ct=><option key={ct} value={ct}>{ct}</option>)}
+              </select>
+            </div>
+            <AzPhoneInput label={AZ.phone} value={form.phone} onChange={v=>set("phone",v)}/>
+            <IntlPhoneInput label={AZ.whatsappNum} value={form.whatsapp} onChange={v=>set("whatsapp",v)} placeholder="+994501234567"/>
+            <EmailInput label={AZ.emailAddr} value={form.email} onChange={v=>set("email",v)}/>
           </div>
         </div>
         <div style={{display:"flex",gap:10}}>
-          <button className="btn btn-primary" style={{flex:2}} onClick={handleSave} disabled={saving}>{saving?AZ.saving:AZ.saveSettings}</button>
-          <button className="btn btn-danger" style={{flex:1}} onClick={onLogout}><span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icon name="logout" size={14} color="var(--red)" strokeWidth={2}/>{AZ.logout}</span></button>
+          <button className="btn btn-primary" style={{flex:2}} onClick={handleSave} disabled={saving}>
+            {saving?AZ.saving:AZ.saveSettings}
+          </button>
+          <button className="btn btn-danger" style={{flex:1}} onClick={onLogout}>
+            <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+              <Icon name="logout" size={14} color="var(--red)" strokeWidth={2}/>{AZ.logout}
+            </span>
+          </button>
         </div>
       </div>
     </div>
@@ -1220,7 +1399,16 @@ function UploadScreen({seller,onBack,onReview}){
         </div>
         {file&&(<div className="file-info"><div style={{fontSize:22}}>📄</div><div><div style={{fontSize:14,fontWeight:500}}>{file.name}</div><div style={{fontSize:12,color:"var(--g500)"}}>{(file.size/1024).toFixed(1)} KB</div></div></div>)}
         <button className="analyze-btn" disabled={!file||parsing} onClick={analyze}>{parsing?<span className="loading-dots">{AZ.analyzing}</span>:AZ.analyzeBtn}</button>
-        <div style={{textAlign:"center"}}><button className="text-link" onClick={()=>{const csv="Hissə adı,Marka,Model,İl,Qiymət,Vəziyyət,Mövcudluq\nRadiator OEM,Peugeot,308,2016,185,Yeni,var\nAlternator,Lada,Granta,,120,İşlənmiş,var";const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="numune.csv";a.click();}}>{AZ.downloadSample}</button></div>
+        <div style={{textAlign:"center"}}><button className="text-link" onClick={()=>{const headers=["Hissə adı","Hissə növü","Vəziyyət","İstehsalçı marka","İstehsalçı ölkə","Mühərrik","Avtomobil markaları","Avtomobil modelləri","İldən","İlə qədər","Qiymət","Mövcudluq","Qeydlər"];
+const rows=[
+  ["Ön tormoz bəndləri","Tormoz bəndi","Yeni","Brembo","İtaliya","","Toyota;Hyundai","Camry;Elantra","2015;2018","2022;2023","55","var",""],
+  ["Radiator OEM","Radiator","Yeni","","","1.6 benzin","Peugeot","308","2014","2019","185","var","Ventilyator daxildir"],
+  ["Alternator işlənmiş","Alternator","İşlənmiş","Bosch","Almaniya","1.6","Lada/VAZ","Granta","2015","2022","120","var",""],
+  ["Yağ filteri","Yağ filteri","Yeni","Mann","Almaniya","","Toyota;Honda","Camry;Accord","2015;2016","2023;2022","18","var",""],
+  ["Amortizator ön sol","Amortizator","Yeni","","Çin","","Hyundai","Accent","2014","2020","68","sifarişlə",""],
+];
+const csv=[headers,...rows].map(r=>r.map(v=>v.includes(",")?`"${v}"`:v).join(",")).join("\n");
+const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="numune_mehsul_siyahisi.csv";a.click();}}>{AZ.downloadSample}</button></div>
       </div>
     </div>
   );
@@ -1244,11 +1432,23 @@ function ReviewScreen({data,seller,onBack,onPublish}){
     const readyRows=[...ok,...warn].filter(r=>r._status!=="err");
     readyRows.forEach(row=>{
       const ref=db.collection("products").doc();
+      const compat=row.compatibility||[];
       batch.set(ref,{
-        name:row.partName||"",brand:row.brand||"",model:row.model||"",
-        price:row.price?Number(row.price):null,condition:row.condition||AZ.condNew,
-        availability:row.availability||"in_stock",notes:row.notes||"",
-        partType:"",engine:"",yearFrom:null,yearTo:null,
+        name:row.partName||"",
+        partType:row.partType||"",
+        condition:row.condition||AZ.condNew,
+        manufacturerBrand:row.manufacturerBrand||"",
+        manufacturerCountry:row.manufacturerCountry||"",
+        engine:row.engine||"",
+        compatibility:compat,
+        // Legacy flat fields from first compat entry
+        brand:compat[0]?.make||"",
+        model:compat[0]?.model||"",
+        yearFrom:compat[0]?.yearFrom||null,
+        yearTo:compat[0]?.yearTo||null,
+        price:row.price?Number(row.price):null,
+        availability:row.availability==="var"||row.availability==="in_stock"?"in_stock":"on_order",
+        notes:row.notes||"",
         status:"live",sellerId:seller.uid,region,
         createdAt:firebase.firestore.FieldValue.serverTimestamp(),
         updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
