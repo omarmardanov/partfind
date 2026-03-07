@@ -1008,7 +1008,15 @@ function IntlPhoneInput({value, onChange, label, placeholder}){
       <div className="field-label-form">{label}</div>
       <input className="form-input" type="tel" placeholder={placeholder||"+X XXX XXX XX XX"}
         value={value}
+        onKeyDown={e=>{
+          // Block any non-numeric key except: backspace, delete, arrows, tab, +
+          const allowed=["Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Tab","Home","End"];
+          if(allowed.includes(e.key)) return;
+          if(e.key==="+" && e.target.selectionStart===0 && !e.target.value.includes("+")) return;
+          if(!/^\d$/.test(e.key)) e.preventDefault();
+        }}
         onChange={e=>{
+          // Strip everything except leading + and digits
           const raw=e.target.value;
           const hasPlus=raw.startsWith("+");
           const d=raw.replace(/\D/g,"").slice(0,15);
