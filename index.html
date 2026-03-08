@@ -60,7 +60,7 @@
     /* REGION */
     .region-wrap { position:relative; flex-shrink:0; display:inline-flex; align-items:center; }
     .region-sizer { position:absolute; visibility:hidden; pointer-events:none; white-space:nowrap; font-family:var(--font-b); font-size:13px; font-weight:500; padding:7px 30px 7px 14px; }
-    .region-select { font-family:var(--font-b); font-size:13px; font-weight:500; color:var(--g700); background:var(--g100); border:none; border-radius:20px; padding:7px 30px 7px 14px; cursor:pointer; outline:none; -webkit-appearance:none; -moz-appearance:none; appearance:none; width:100%; }
+    .region-select { font-family:var(--font-b); font-size:13px; font-weight:500; color:var(--g700); background:var(--g100); border:none; border-radius:20px; padding:7px 30px 7px 14px; cursor:pointer; outline:none; -webkit-appearance:none; -moz-appearance:none; appearance:none; }
     .region-select:focus { background:var(--g200); }
     .region-caret { position:absolute; right:11px; top:50%; transform:translateY(-50%); font-size:10px; color:var(--g500); pointer-events:none; }
 
@@ -686,10 +686,17 @@ function RegionSelector({region,onChange,sellerCities}){
   const regions=buildRegions(sellerCities||[]);
   const cur=regions.find(r=>r.id===region)||regions[0];
   const label=cur.label+(cur.soon?" · tezliklə":"");
+  const sizerRef=useRef();
+  const selectRef=useRef();
+  useEffect(()=>{
+    if(sizerRef.current&&selectRef.current){
+      selectRef.current.style.width=sizerRef.current.offsetWidth+"px";
+    }
+  },[label]);
   return(
     <div className="region-wrap">
-      <span className="region-sizer" aria-hidden="true">{label}</span>
-      <select className="region-select" value={region} onChange={e=>onChange(e.target.value)}>
+      <span className="region-sizer" ref={sizerRef} aria-hidden="true">{label}</span>
+      <select className="region-select" ref={selectRef} value={region} onChange={e=>onChange(e.target.value)}>
         {regions.map(r=>(
           <option key={r.id} value={r.id}>{r.label}{r.soon?" · tezliklə":""}</option>
         ))}
