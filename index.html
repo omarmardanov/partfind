@@ -393,27 +393,30 @@ function formatDateAZ(date) {
   return `${d.getDate()} ${AZ.months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-// Base regions always shown
-const BASE_REGIONS = [
-  {id:"all",  label:"Bütün Azərbaycan"},
-  {id:"baku", label:"Bakı"},
-  {id:"ganja",label:"Gəncə"},
-  {id:"nakh", label:"Naxçıvan"},
-];
-// City → region key map for dynamic regions
-const CITY_REGION_MAP = {
-  "Bakı":"baku","Gəncə":"ganja","Naxçıvan":"nakh",
-};
-// derive display regions from live seller counts + base list
+// Known region id → city name
+const KNOWN_REGIONS = {baku:"Bakı", ganja:"Gəncə", nakh:"Naxçıvan"};
+
+// Build region list from live seller cities
+// Cities with sellers shown normally; known cities without sellers shown as "tezliklə"; unknown cities added dynamically
 function buildRegions(sellerCities){
-  const extra=[];
+  const citySet = new Set(sellerCities);
+  const hasCity = city => citySet.has(city);
+
+  const list = [
+    {id:"all", label:"Bütün Azərbaycan"},
+    {id:"baku", label:"Bakı", soon:!hasCity("Bakı")},
+    {id:"ganja", label:"Gəncə", soon:!hasCity("Gəncə")},
+    {id:"nakh", label:"Naxçıvan", soon:!hasCity("Naxçıvan")},
+  ];
+
+  // Add any city not covered by known regions
   sellerCities.forEach(city=>{
-    if(!CITY_REGION_MAP[city]){
-      const id="city_"+city.toLowerCase().replace(/\s/g,"_");
-      if(!extra.find(r=>r.id===id)) extra.push({id,label:city,dynamic:true});
+    if(!["Bakı","Gəncə","Naxçıvan"].includes(city)){
+      const id="city_"+city.toLowerCase().replace(/[\s-]/g,"_");
+      if(!list.find(r=>r.id===id)) list.push({id, label:city, soon:false});
     }
   });
-  return [...BASE_REGIONS, ...extra];
+  return list;
 }
 
 // Derive Firestore region key from city name
@@ -679,20 +682,17 @@ function Toast({message,onDone}){
 function Spinner() { return <div className="full-loading"><div className="spinner"/></div>; }
 
 // ── REGION SELECTOR ──
-function RegionSelector({region,onChange,sellerCounts,sellerCities}){
+function RegionSelector({region,onChange,sellerCities}){
   const regions=buildRegions(sellerCities||[]);
   const cur=regions.find(r=>r.id===region)||regions[0];
-  const count=sellerCounts[cur.id]||0;
-  const label=cur.label+(count>0?` · ${count} satıcı`:cur.id==="all"?"":cur.dynamic?"":" · tezliklə");
+  const label=cur.label+(cur.soon?" · tezliklə":"");
   return(
     <div className="region-wrap">
       <span className="region-sizer" aria-hidden="true">{label}</span>
       <select className="region-select" value={region} onChange={e=>onChange(e.target.value)}>
-        {regions.map(r=>{
-          const cnt=sellerCounts[r.id]||0;
-          const suffix=cnt>0?` · ${cnt} satıcı`:r.id==="all"?"":r.dynamic?"":" · tezliklə";
-          return <option key={r.id} value={r.id}>{r.label}{suffix}</option>;
-        })}
+        {regions.map(r=>(
+          <option key={r.id} value={r.id}>{r.label}{r.soon?" · tezliklə":""}</option>
+        ))}
       </select>
       <span className="region-caret">▾</span>
     </div>
@@ -776,14 +776,15 @@ function ResultsPage({query,region,onBack,onProduct,onContact}){
     .filter(p=>{
       if(p._score<2) return false;
       if(region==="all") return true;
-      // Support both static region keys and dynamic city_ keys
+      // For dynamic city keys, match against seller's city
       if(region.startsWith("city_")){
         const cityLabel=region.replace("city_","").replace(/_/g," ");
         const sellerCity=(sellers[p.sellerId]||{}).city||"";
         return sellerCity.toLowerCase()===cityLabel.toLowerCase();
       }
-      const pr=p.region||"other";
-      return pr===region;
+      // For known region keys (baku/ganja/nakh), match p.region
+      // Products with region="other" do NOT match known regions — only show under "all" or their city
+      return (p.region||"other")===region;
     })
     .sort((a,b)=>{
       if(a.availability!==b.availability) return a.availability==="in_stock"?-1:1;
@@ -1608,7 +1609,7 @@ function App(){
   const [uploadData,setUD]=useState(null);
   const [currentUser,setCurrentUser]=useState(null); // Firebase auth user
   const [sellerInfo,setSellerInfo]=useState(null);   // Firestore seller profile
-  const [sellerCounts,setSellerCounts]=useState({all:0,baku:0,ganja:0,nakh:0});
+
   const [toast,setToast]=useState(null);
   const showToast=msg=>setToast(msg);
 
@@ -1632,20 +1633,12 @@ function App(){
     });
   },[]);
 
-  // Live seller counts + dynamic city list
+  // Live seller cities for dynamic region list
   const [sellerCities,setSellerCities]=useState([]);
   useEffect(()=>{
     return db.collection("sellers").onSnapshot(snap=>{
-      const counts={all:snap.size,baku:0,ganja:0,nakh:0};
       const cities=[];
-      snap.docs.forEach(d=>{
-        const data=d.data();
-        const r=data.region||cityToRegion(data.city)||"other";
-        if(counts[r]!==undefined) counts[r]++;
-        else counts[r]=1;
-        if(data.city) cities.push(data.city);
-      });
-      setSellerCounts(counts);
+      snap.docs.forEach(d=>{const data=d.data();if(data.city) cities.push(data.city);});
       setSellerCities([...new Set(cities)]);
     });
   },[]);
@@ -1696,7 +1689,7 @@ function App(){
     <div className="app">
       <nav className="topnav">
         <div className="topnav-logo" onClick={goHome} dangerouslySetInnerHTML={{__html:LOGO_SVG+'Partal'}}/>
-        {mode==="buyer"&&<RegionSelector region={region} onChange={setRegion} sellerCounts={sellerCounts} sellerCities={sellerCities}/>}
+        {mode==="buyer"&&<RegionSelector region={region} onChange={setRegion} sellerCities={sellerCities}/>}
         {mode==="seller"&&currentUser&&sellerInfo&&(
           <div className="topnav-stats">
             <div className="topnav-stats-label">{AZ.todayStats}</div>
