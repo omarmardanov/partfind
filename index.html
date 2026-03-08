@@ -206,6 +206,15 @@
     .badge { display:inline-block; font-size:11px; font-weight:600; border-radius:20px; padding:3px 9px; }
     .badge-live { background:var(--green-bg); color:var(--green); }
     .badge-draft { background:var(--g100); color:var(--g500); }
+    .td-name-wrap { min-width:0; }
+    @media (max-width:400px) {
+      .inv-table-head { grid-template-columns:1fr 70px; }
+      .inv-table-row { grid-template-columns:1fr 70px; }
+      .th-status { display:none; }
+      .td-status { display:none; }
+      .td-sub-status { display:inline; }
+    }
+    @media (min-width:401px) { .td-sub-status { display:none; } }
 
     /* FORM */
     .form-header { padding:14px 20px; border-bottom:1px solid var(--g100); display:flex; align-items:center; gap:12px; position:sticky; top:57px; background:var(--white); z-index:50; }
@@ -295,6 +304,8 @@
     .loading-dots::after { content:'...'; animation:dots 1.2s infinite; }
     @keyframes dots { 0%,20%{content:'.';}40%,60%{content:'..';}80%,100%{content:'...';} }
     a { color:inherit; }
+    /* Hide reCAPTCHA badge — legally must keep in ToS but can hide visually */
+    .grecaptcha-badge { visibility: hidden !important; }
   </style>
 </head>
 <body>
@@ -382,12 +393,28 @@ function formatDateAZ(date) {
   return `${d.getDate()} ${AZ.months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-const REGIONS = [
+// Base regions always shown
+const BASE_REGIONS = [
   {id:"all",  label:"Bütün Azərbaycan"},
   {id:"baku", label:"Bakı"},
   {id:"ganja",label:"Gəncə"},
   {id:"nakh", label:"Naxçıvan"},
 ];
+// City → region key map for dynamic regions
+const CITY_REGION_MAP = {
+  "Bakı":"baku","Gəncə":"ganja","Naxçıvan":"nakh",
+};
+// derive display regions from live seller counts + base list
+function buildRegions(sellerCities){
+  const extra=[];
+  sellerCities.forEach(city=>{
+    if(!CITY_REGION_MAP[city]){
+      const id="city_"+city.toLowerCase().replace(/\s/g,"_");
+      if(!extra.find(r=>r.id===id)) extra.push({id,label:city,dynamic:true});
+    }
+  });
+  return [...BASE_REGIONS, ...extra];
+}
 
 // Derive Firestore region key from city name
 function cityToRegion(city) {
@@ -513,9 +540,12 @@ function scoreProduct(p, params, rawQuery) {
   if(params.brand && !brandMatched) return 0;
   if(params.model && !modelMatched) return 0;
 
-  // ── Part type score ──
+  // ── Part type score — hard filter if partType specified ──
   let score = compatScore;
-  if(params.partType && p.partType === params.partType) score += 3;
+  if(params.partType){
+    if(p.partType !== params.partType) return 0; // must match exactly
+    score += 3;
+  }
   if(params.engine && p.engine && p.engine.includes(params.engine)) score += 1;
 
   // ── Minimum: need at least one signal to show ──
@@ -527,7 +557,11 @@ function scoreProduct(p, params, rawQuery) {
       ? compat.map(e => [e.make, e.model].filter(Boolean).join(" ")).join(" ")
       : [p.brand, p.model].filter(Boolean).join(" ");
     const haystack = [p.name, p.partType, compatText].filter(Boolean).join(" ").toLowerCase();
-    return tokens.some(t => haystack.includes(t)) ? 1 : 0;
+    // Require at least 2 tokens to match, or 1 token that matches the product name directly
+    const matchCount = tokens.filter(t => haystack.includes(t)).length;
+    if(matchCount === 0) return 0;
+    if(tokens.length === 1) return matchCount > 0 ? 1 : 0;
+    return matchCount >= Math.min(2, tokens.length) ? 1 : 0;
   }
 
   // Name-based boost: if product name contains a query token, add 1
@@ -543,26 +577,26 @@ function scoreProduct(p, params, rawQuery) {
 // CSV helpers
 const COL_MAP={
   // Part info
-  "hissə adı":"partName","наименование товара":"partName","наименование":"partName","part name":"partName","name":"partName",
-  "hissə növü":"partType","part type":"partType","категория":"partType",
-  "vəziyyət":"condition","состояние":"condition","condition":"condition",
-  // Manufacturer
-  "istehsalçı marka":"manufacturerBrand","istehsalçı":"manufacturerBrand","manufacturer":"manufacturerBrand","бренд":"manufacturerBrand",
-  "istehsalçı ölkə":"manufacturerCountry","ölkə":"manufacturerCountry","country":"manufacturerCountry","страна":"manufacturerCountry",
-  "mühərrik":"engine","двигатель":"engine","engine":"engine",
-  // Compatibility (multi-value separated by ;)
-  "avtomobil markaları":"compatMakes","марка":"compatMakes","brand":"compatMakes","marka":"compatMakes",
-  "avtomobil modelləri":"compatModels","модель":"compatModels","model":"compatModels",
-  "ildən":"yearFrom","год от":"yearFrom","year from":"yearFrom","il":"yearFrom",
-  "ilə qədər":"yearTo","год до":"yearTo","year to":"yearTo",
-  "год":"yearFrom",
+  "hissə adı":"partName","наименование товара":"partName","наименование":"partName","part name":"partName","name":"partName","ad":"partName","mal adı":"partName",
+  "hissə növü":"partType","part type":"partType","категория":"partType","növ":"partType","kateqoriya":"partType",
+  "vəziyyət":"condition","состояние":"condition","condition":"condition","hal":"condition",
+  // Manufacturer — exact template column names + variants
+  "istehsalçı marka":"manufacturerBrand","istehsalci marka":"manufacturerBrand","istehsalçı":"manufacturerBrand","manufacturer":"manufacturerBrand","бренд":"manufacturerBrand","brend":"manufacturerBrand","istehsalçı brand":"manufacturerBrand",
+  "istehsalçı ölkə":"manufacturerCountry","ölkə":"manufacturerCountry","country":"manufacturerCountry","страна":"manufacturerCountry","istehsalci ölkə":"manufacturerCountry","istehsal ölkəsi":"manufacturerCountry",
+  "mühərrik":"engine","двигатель":"engine","engine":"engine","muhərrik":"engine","motor həcmi":"engine",
+  // Compatibility — exact template names + variants
+  "avtomobil markaları":"compatMakes","автомобиль марка":"compatMakes","марка":"compatMakes","brand":"compatMakes","marka":"compatMakes","avtomobil marka":"compatMakes","maşın markası":"compatMakes","make":"compatMakes",
+  "avtomobil modelləri":"compatModels","автомобиль модель":"compatModels","модель":"compatModels","model":"compatModels","avtomobil model":"compatModels","maşın modeli":"compatModels",
+  "ildən":"yearFrom","год от":"yearFrom","year from":"yearFrom","il (başlanğıc)":"yearFrom","başlanğıc il":"yearFrom","from year":"yearFrom",
+  "ilə qədər":"yearTo","год до":"yearTo","year to":"yearTo","il (son)":"yearTo","son il":"yearTo","to year":"yearTo",
+  "год":"yearFrom","il":"yearFrom",
   // Pricing
-  "qiymət":"price","цена":"price","цена azn":"price","price":"price",
-  "mövcudluq":"availability","наличие":"availability","остаток":"availability","availability":"availability",
+  "qiymət":"price","цена":"price","цена azn":"price","price":"price","qiymet":"price","məbləğ":"price",
+  "mövcudluq":"availability","наличие":"availability","остаток":"availability","availability":"availability","stok":"availability","var/yox":"availability",
   // Notes
-  "qeydlər":"notes","примечания":"notes","notes":"notes",
+  "qeydlər":"notes","примечания":"notes","notes":"notes","qeyd":"notes","açıqlama":"notes",
   // Ignore
-  "марка/модель/год":null,
+  "марка/модель/год":null,"sku":null,"kod":"null","код поставщика":null,"supplier code":null,
 };
 const CANON_LABELS={
   partName:"Hissə adı",partType:"Hissə növü",condition:"Vəziyyət",
@@ -572,33 +606,54 @@ const CANON_LABELS={
   price:"Qiymət",availability:"Mövcudluq",notes:"Qeydlər",
   brand:"Marka",model:"Model",year:"İl", // legacy
 };
-function inferCols(headers){return headers.map(h=>{const low=h.toLowerCase().trim(),inf=COL_MAP[low];return{original:h,inferred:inf!==undefined?(inf===null?"ignore":inf):"ignore",confidence:inf===null?"warn":inf!==undefined?"ok":"warn"};});}
+function normalizeHeader(h){
+  // Azerbaijani İ lowercases to i + combining dot (U+0307), not plain i
+  // Replace all variants of dotted-I with plain i for COL_MAP lookup
+  return h.toLowerCase().replace(/i\u0307/g,"i").replace(/\u0130/g,"i").trim();
+}
+function inferCols(headers){return headers.map(h=>{const low=normalizeHeader(h),inf=COL_MAP[low];return{original:h,inferred:inf!==undefined?(inf===null?"ignore":inf):"ignore",confidence:inf===null?"warn":inf!==undefined?"ok":"warn"};});}
 function normalizeRows(rows,mappings){
-  return rows.slice(0,100).map((row,i)=>{
+  // Step 1: parse each raw row
+  const parsed=rows.slice(0,200).map((row,i)=>{
     const obj={};
     mappings.forEach(m=>{if(m.inferred&&m.inferred!=="ignore")obj[m.inferred]=row[m.original]||null;});
+    // Parse price — strip currency symbols and text
+    if(obj.price) obj.price=String(obj.price).replace(/[^\d.]/g,"").trim()||null;
+    // Normalise availability
+    if(obj.availability){
+      const av=String(obj.availability).toLowerCase().trim();
+      obj.availability=["var","есть","in_stock","1","bəli","yes"].includes(av)?"in_stock":"on_order";
+    }
+    // Single compat entry from this row
+    const make=(obj.compatMakes||obj.brand||"").trim();
+    const model=(obj.compatModels||obj.model||"").trim();
+    const yearFrom=obj.yearFrom?Number(String(obj.yearFrom).replace(/\D/g,""))||null:null;
+    const yearTo=obj.yearTo?Number(String(obj.yearTo).replace(/\D/g,""))||null:null;
+    obj._compatEntry=(make||model)?{make,model,yearFrom,yearTo}:null;
+    return{...obj,_rawIdx:i};
+  }).filter(row=>Object.values(row).some(v=>v&&v!==""&&v!==null));
 
-    // Build compatibility array from multi-value fields (separated by ;)
-    const makes=(obj.compatMakes||obj.brand||"").split(";").map(s=>s.trim()).filter(Boolean);
-    const models=(obj.compatModels||obj.model||"").split(";").map(s=>s.trim()).filter(Boolean);
-    const yearFroms=(obj.yearFrom||"").toString().split(";").map(s=>s.trim()).filter(Boolean);
-    const yearTos=(obj.yearTo||"").toString().split(";").map(s=>s.trim()).filter(Boolean);
-    const count=Math.max(makes.length,models.length,1);
-    const compatibility=Array.from({length:count},(_,idx)=>({
-      make:makes[idx]||makes[0]||"",
-      model:models[idx]||"",
-      yearFrom:yearFroms[idx]?Number(yearFroms[idx]):null,
-      yearTo:yearTos[idx]?Number(yearTos[idx]):null,
-    })).filter(e=>e.make||e.model);
-    obj.compatibility=compatibility.length>0?compatibility:[];
-
-    let status="ok",issue="Bütün sahələr xəritələndi";
-    if(Object.values(obj).every(v=>!v||v==="")){status="err";issue="Boş sətir";}
-    else if(!obj.partName){status="err";issue="Hissə adı yoxdur";}
-    else if(obj.compatibility.length===0){status="warn";issue="Avtomobil uyğunluğu qeyri-müəyyəndir";}
-    else if(!obj.price){status="warn";issue="Qiymət tapılmadı";}
-    return{...obj,_id:i,_status:status,_issue:issue};
-  });
+  // Step 2: group rows with same name+price into one product (multi-compat)
+  const grouped=[];
+  const seen={};
+  for(const row of parsed){
+    const key=(row.partName||"")+"||"+(row.price||"");
+    const cleanName=(row.partName||"").trim();
+    if(!cleanName||cleanName.length<2){continue;}
+    row.partName=cleanName;
+    if(seen[key]!==undefined){
+      // Append compat entry to existing product
+      if(row._compatEntry) grouped[seen[key]].compatibility.push(row._compatEntry);
+    } else {
+      seen[key]=grouped.length;
+      const compat=row._compatEntry?[row._compatEntry]:[];
+      let status="ok",issue="Bütün sahələr xəritələndi";
+      if(!row.price){status="warn";issue="Qiymət tapılmadı";}
+      else if(compat.length===0){status="warn";issue="Avtomobil uyğunluğu qeyri-müəyyəndir";}
+      grouped.push({...row,compatibility:compat,_id:grouped.length,_status:status,_issue:issue});
+    }
+  }
+  return grouped.slice(0,100);
 }
 
 // ── ICONS ──
@@ -624,17 +679,19 @@ function Toast({message,onDone}){
 function Spinner() { return <div className="full-loading"><div className="spinner"/></div>; }
 
 // ── REGION SELECTOR ──
-function RegionSelector({region,onChange,sellerCounts}){
-  const cur=REGIONS.find(r=>r.id===region)||REGIONS[0];
+function RegionSelector({region,onChange,sellerCounts,sellerCities}){
+  const regions=buildRegions(sellerCities||[]);
+  const cur=regions.find(r=>r.id===region)||regions[0];
   const count=sellerCounts[cur.id]||0;
-  const label=cur.label+(count>0?` · ${count} satıcı`:cur.id==="all"?"":" · tezliklə");
+  const label=cur.label+(count>0?` · ${count} satıcı`:cur.id==="all"?"":cur.dynamic?"":" · tezliklə");
   return(
     <div className="region-wrap">
       <span className="region-sizer" aria-hidden="true">{label}</span>
       <select className="region-select" value={region} onChange={e=>onChange(e.target.value)}>
-        {REGIONS.map(r=>{
-          const c=sellerCounts[r.id]||0;
-          return <option key={r.id} value={r.id}>{r.label}{c>0?` · ${c} satıcı`:r.id==="all"?"":" · tezliklə"}</option>;
+        {regions.map(r=>{
+          const cnt=sellerCounts[r.id]||0;
+          const suffix=cnt>0?` · ${cnt} satıcı`:r.id==="all"?"":r.dynamic?"":" · tezliklə";
+          return <option key={r.id} value={r.id}>{r.label}{suffix}</option>;
         })}
       </select>
       <span className="region-caret">▾</span>
@@ -719,7 +776,12 @@ function ResultsPage({query,region,onBack,onProduct,onContact}){
     .filter(p=>{
       if(p._score<2) return false;
       if(region==="all") return true;
-      // client-side region filter
+      // Support both static region keys and dynamic city_ keys
+      if(region.startsWith("city_")){
+        const cityLabel=region.replace("city_","").replace(/_/g," ");
+        const sellerCity=(sellers[p.sellerId]||{}).city||"";
+        return sellerCity.toLowerCase()===cityLabel.toLowerCase();
+      }
       const pr=p.region||"other";
       return pr===region;
     })
@@ -1005,25 +1067,26 @@ function AzPhoneInput({value, onChange, label}){
 }
 
 function IntlPhoneInput({value, onChange, label, placeholder}){
+  // Always show + prefix, user types digits after it
+  // Store as +XXXXXXXXXXXXXXX
+  const digits=(value||"").replace(/\D/g,"").slice(0,15);
   return(
     <div className="field-wrap">
       <div className="field-label-form">{label}</div>
-      <input className="form-input" type="tel" placeholder={placeholder||"+X XXX XXX XX XX"}
-        value={value}
-        onKeyDown={e=>{
-          // Block any non-numeric key except: backspace, delete, arrows, tab, +
-          const allowed=["Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Tab","Home","End"];
-          if(allowed.includes(e.key)) return;
-          if(e.key==="+" && e.target.selectionStart===0 && !e.target.value.includes("+")) return;
-          if(!/^\d$/.test(e.key)) e.preventDefault();
-        }}
-        onChange={e=>{
-          // Strip everything except leading + and digits
-          const raw=e.target.value;
-          const hasPlus=raw.startsWith("+");
-          const d=raw.replace(/\D/g,"").slice(0,15);
-          onChange(d.length>0?(hasPlus?"+":"")+d:"");
-        }}/>
+      <div className="phone-wrap">
+        <span className="phone-prefix">+</span>
+        <input className="phone-input" type="tel" placeholder="994501234567"
+          value={digits}
+          onKeyDown={e=>{
+            const allowed=["Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Tab","Home","End"];
+            if(allowed.includes(e.key)) return;
+            if(!/^\d$/.test(e.key)) e.preventDefault();
+          }}
+          onChange={e=>{
+            const d=e.target.value.replace(/\D/g,"").slice(0,15);
+            onChange(d.length>0?"+"+d:"");
+          }}/>
+      </div>
     </div>
   );
 }
@@ -1153,14 +1216,20 @@ function Dashboard({seller,onAdd,onEdit,onUpload,onSettings}){
       <div className="section-label" style={{marginBottom:12}}>{AZ.yourListings}</div>
       {loading?<Spinner/>:(
         <div className="inv-table">
-          <div className="inv-table-head"><div className="th">{AZ.partName}</div><div className="th right">{AZ.price}</div><div className="th right">Status</div></div>
-          {products.length===0?(<div className="empty-state"><p>Hələ məhsul yoxdur.<br/>Yuxarıda əlavə edin.</p></div>):products.map(p=>(
+          <div className="inv-table-head"><div className="th">{AZ.partName}</div><div className="th right">{AZ.price}</div><div className="th right th-status">Status</div></div>
+          {products.length===0?(<div className="empty-state"><p>Hələ məhsul yoxdur.<br/>Yuxarıda əlavə edin.</p></div>):products.map(p=>{
+            const cs=p.compatibility&&p.compatibility[0]?[p.compatibility[0].make,p.compatibility[0].model].filter(Boolean).join(" · "):(p.brand&&p.model?p.brand+" · "+p.model:null);
+            const bdg=<span className={`badge ${p.status==="draft"?"badge-draft":"badge-live"}`}>{p.status==="draft"?AZ.draft:AZ.live}</span>;
+            return(
             <div key={p.id} className="inv-table-row" onClick={()=>onEdit(p)}>
-              <div><div className="td-name">{p.name}</div><div className="td-sub">{[p.brand,p.model,p.yearFrom].filter(Boolean).join(" · ")||"Məlumat yoxdur"}</div></div>
+              <div className="td-name-wrap">
+                <div className="td-name">{p.name}</div>
+                <div className="td-sub">{cs||"Məlumat yoxdur"}<span className="td-sub-status"> · {p.status==="draft"?AZ.draft:AZ.live}</span></div>
+              </div>
               <div className={`td-price ${!p.price?"na":""}`}>{p.price?`₼ ${p.price}`:"—"}</div>
-              <div className="td-status"><span className={`badge ${p.status==="draft"?"badge-draft":"badge-live"}`}>{p.status==="draft"?AZ.draft:AZ.live}</span></div>
+              <div className="td-status">{bdg}</div>
             </div>
-          ))}
+          );})}
         </div>
       )}
     </div>
@@ -1411,13 +1480,19 @@ function UploadScreen({seller,onBack,onReview}){
         <button className="analyze-btn" disabled={!file||parsing} onClick={analyze}>{parsing?<span className="loading-dots">{AZ.analyzing}</span>:AZ.analyzeBtn}</button>
         <div style={{textAlign:"center"}}><button className="text-link" onClick={()=>{const headers=["Hissə adı","Hissə növü","Vəziyyət","İstehsalçı marka","İstehsalçı ölkə","Mühərrik","Avtomobil markaları","Avtomobil modelləri","İldən","İlə qədər","Qiymət","Mövcudluq","Qeydlər"];
 const rows=[
-  ["Ön tormoz bəndləri","Tormoz bəndi","Yeni","Brembo","İtaliya","","Toyota;Hyundai","Camry;Elantra","2015;2018","2022;2023","55","var",""],
+  // Single-compat products — one row
   ["Radiator OEM","Radiator","Yeni","","","1.6 benzin","Peugeot","308","2014","2019","185","var","Ventilyator daxildir"],
   ["Alternator işlənmiş","Alternator","İşlənmiş","Bosch","Almaniya","1.6","Lada/VAZ","Granta","2015","2022","120","var",""],
-  ["Yağ filteri","Yağ filteri","Yeni","Mann","Almaniya","","Toyota;Honda","Camry;Accord","2015;2016","2023;2022","18","var",""],
   ["Amortizator ön sol","Amortizator","Yeni","","Çin","","Hyundai","Accent","2014","2020","68","sifarişlə",""],
+  // Multi-compat product — repeat the product on multiple rows, one car per row
+  // Same name+price on each row = system groups them into one product with multiple compatibility entries
+  ["Ön tormoz bəndləri","Tormoz bəndi","Yeni","Brembo","İtaliya","","Toyota","Camry","2015","2022","55","var",""],
+  ["Ön tormoz bəndləri","Tormoz bəndi","Yeni","Brembo","İtaliya","","Toyota","Corolla","2014","2021","55","var",""],
+  ["Ön tormoz bəndləri","Tormoz bəndi","Yeni","Brembo","İtaliya","","Hyundai","Elantra","2018","2023","55","var",""],
+  ["Yağ filteri","Yağ filteri","Yeni","Mann","Almaniya","","Toyota","Camry","2015","2023","18","var",""],
+  ["Yağ filteri","Yağ filteri","Yeni","Mann","Almaniya","","Honda","Accord","2016","2022","18","var",""],
 ];
-const csv=[headers,...rows].map(r=>r.map(v=>v.includes(",")?`"${v}"`:v).join(",")).join("\n");
+const csv=[headers,...rows].map(r=>r.map(v=>String(v).includes(",")?`"${v}"`:v).join(",")).join("\n");
 const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="numune_mehsul_siyahisi.csv";a.click();}}>{AZ.downloadSample}</button></div>
       </div>
     </div>
@@ -1432,7 +1507,7 @@ function ReviewScreen({data,seller,onBack,onPublish}){
   const rows=data.rows;
   const ok=rows.filter(r=>r._status==="ok"),warn=rows.filter(r=>r._status==="warn"),err=rows.filter(r=>r._status==="err");
   const display=tab==="all"?rows:tab==="warn"?warn:err;
-  const opts=["partName","brand","model","year","engine","price","condition","availability","notes","ignore"];
+  const opts=["partName","partType","condition","manufacturerBrand","manufacturerCountry","engine","compatMakes","compatModels","yearFrom","yearTo","price","availability","notes","ignore"];
   const upd=(i,val)=>setMappings(m=>m.map((item,idx)=>idx===i?{...item,inferred:val,confidence:"ok"}:item));
 
   const handlePublish=async()=>{
@@ -1467,7 +1542,8 @@ function ReviewScreen({data,seller,onBack,onPublish}){
     await batch.commit();
     await db.collection("sellers").doc(seller.uid).update({lastUpload:firebase.firestore.FieldValue.serverTimestamp()});
     setPublishing(false);
-    onPublish(readyRows.length);
+    const now=new Date();
+    onPublish(readyRows.length, now);
   };
 
   return(
@@ -1556,18 +1632,21 @@ function App(){
     });
   },[]);
 
-  // Live seller counts
+  // Live seller counts + dynamic city list
+  const [sellerCities,setSellerCities]=useState([]);
   useEffect(()=>{
     return db.collection("sellers").onSnapshot(snap=>{
-      const counts={all:snap.size,baku:0,ganja:0,nakh:0,other:0};
+      const counts={all:snap.size,baku:0,ganja:0,nakh:0};
+      const cities=[];
       snap.docs.forEach(d=>{
         const data=d.data();
-        // Use region field if present, fall back to deriving from city
         const r=data.region||cityToRegion(data.city)||"other";
-        if(counts[r]!==undefined)counts[r]++;
+        if(counts[r]!==undefined) counts[r]++;
+        else counts[r]=1;
+        if(data.city) cities.push(data.city);
       });
-      // baku sellers also count toward "all" already
       setSellerCounts(counts);
+      setSellerCities([...new Set(cities)]);
     });
   },[]);
 
@@ -1604,7 +1683,11 @@ function App(){
     if(!currentUser)return authLoading?<Spinner/>:<LoginPage onLogin={handleLogin} onBack={goHome}/>;
     if(screen==="form")return <ProductForm product={editingProduct} seller={sellerInfo} onBack={()=>{setScreen("dashboard");setEP(null);}} onSaved={(isDraft)=>{setScreen("dashboard");setEP(null);showToast(isDraft?AZ.draftSaved:editingProduct?.id?AZ.productUpdated:AZ.productAdded);}} onDeleted={()=>{setScreen("dashboard");setEP(null);showToast(AZ.productDeleted);}}/>;
     if(screen==="upload")return <UploadScreen seller={sellerInfo} onBack={()=>setScreen("dashboard")} onReview={d=>{setUD(d);setScreen("review");}}/>;
-    if(screen==="review"&&uploadData)return <ReviewScreen data={uploadData} seller={sellerInfo} onBack={()=>setScreen("upload")} onPublish={count=>{showToast(`${count} ${AZ.published}`);setScreen("dashboard");setUD(null);}}/>;
+    if(screen==="review"&&uploadData)return <ReviewScreen data={uploadData} seller={sellerInfo} onBack={()=>setScreen("upload")} onPublish={(count,uploadDate)=>{
+              if(uploadDate) setSellerInfo(s=>({...s,lastUpload:uploadDate}));
+              showToast(`${count} ${AZ.published}`);
+              setScreen("dashboard");setUD(null);
+            }}/>;
     if(screen==="settings")return <SettingsPage seller={sellerInfo} onSave={handleSaveSettings} onLogout={handleLogout} onBack={()=>setScreen(sellerInfo?.shopName?"dashboard":"settings")}/>;
     return <Dashboard seller={sellerInfo} onAdd={()=>{setEP(null);setScreen("form");}} onEdit={p=>{setEP(p);setScreen("form");}} onUpload={()=>setScreen("upload")} onSettings={()=>setScreen("settings")}/>;
   };
@@ -1613,7 +1696,7 @@ function App(){
     <div className="app">
       <nav className="topnav">
         <div className="topnav-logo" onClick={goHome} dangerouslySetInnerHTML={{__html:LOGO_SVG+'Partal'}}/>
-        {mode==="buyer"&&<RegionSelector region={region} onChange={setRegion} sellerCounts={sellerCounts}/>}
+        {mode==="buyer"&&<RegionSelector region={region} onChange={setRegion} sellerCounts={sellerCounts} sellerCities={sellerCities}/>}
         {mode==="seller"&&currentUser&&sellerInfo&&(
           <div className="topnav-stats">
             <div className="topnav-stats-label">{AZ.todayStats}</div>
