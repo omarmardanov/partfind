@@ -726,10 +726,10 @@ function SearchTextarea({value,onChange,onSubmit,placeholder}){
 }
 
 // ── BUYER HOME ──
-function BuyerHome({onSearch,onSellerLogin,sellerCounts,region,onRegion}){
+function BuyerHome({onSearch,onSellerLogin,sellerCities,region,onRegion}){
   const [q,setQ]=useState("");
   const presets=["Radiator Peugeot 308 2016","Tormoz bəndi Toyota Camry","Yağ filteri Hyundai Accent"];
-  const totalOnline=Object.values(sellerCounts).reduce((a,b)=>Math.max(a,b),0);
+  const totalOnline=(sellerCities||[]).length;
   return(
     <div className="home-wrap">
       <div className="home-headline">{AZ.headline1}<br/><em>{AZ.headline2}</em></div>
@@ -739,7 +739,7 @@ function BuyerHome({onSearch,onSellerLogin,sellerCounts,region,onRegion}){
       <div className="chip-row">{presets.map(p=><button key={p} className="chip" onClick={()=>onSearch(p)}>{p}</button>)}</div>
       <div className="home-footer">
         <button className="text-link" onClick={onSellerLogin}>{AZ.sellerLogin} →</button>
-        <div className="online-badge"><div className="dot-live"/><span>{sellerCounts["all"]||0} {AZ.sellersOnline}</span></div>
+        <div className="online-badge"><div className="dot-live"/><span>{totalOnline} {AZ.sellersOnline}</span></div>
       </div>
     </div>
   );
@@ -1669,7 +1669,7 @@ function App(){
   const renderBuyer=()=>{
     if(screen==="results")return <ResultsPage query={query} region={region} onBack={()=>setScreen("home")} onProduct={(p,s)=>{setSP(p);setSeller(s);}} onContact={()=>{}}/>;
     if(screen==="login")return <LoginPage onLogin={handleLogin} onBack={()=>setScreen("home")}/>;
-    return <BuyerHome onSearch={q=>{setQuery(q);setScreen("results");}} onSellerLogin={()=>{if(currentUser&&sellerInfo){setMode("seller");setScreen("dashboard");}else{setScreen("login");}}} sellerCounts={sellerCounts} region={region} onRegion={setRegion}/>;
+    return <BuyerHome onSearch={q=>{setQuery(q);setScreen("results");}} onSellerLogin={()=>{if(currentUser&&sellerInfo){setMode("seller");setScreen("dashboard");}else{setScreen("login");}}} sellerCities={sellerCities} region={region} onRegion={setRegion}/>;
   };
 
   const renderSeller=()=>{
